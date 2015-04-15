@@ -45,33 +45,6 @@ abstract class QuickCheckHeap extends Properties("Heap") with IntHeap {
     isEmpty(h1)
   }
 
-  property("The heap is ordered") = forAll { h: H =>
-    isOrdered(h)
-  }
-
-  property("Melded heaps are ordered") = forAll { (h1: H, h2: H) =>
-    val h = meld(h1, h2)
-    isOrdered(h)
-  }
-
-  def isOrdered(h: H): Boolean = {
-    def isOrdered(heap: H, previous: A): Boolean = {
-      if (isEmpty(heap)) {
-        true
-      } else {
-        val min: A = findMin(heap)
-        (previous <= min) && isOrdered(deleteMin(heap), min)
-      }
-    }
-
-    if (isEmpty(h)) {
-      true
-    } else {
-      val min: A = findMin(h)
-      isOrdered(deleteMin(h), min)
-    }
-  }
-
   property("The minimum of two heaps melded, is the minimum of the minima of the heaps") = forAll { (h1: H, h2: H) =>
     findMin(meld(h1, h2)) == List(findMin(h1), findMin(h2)).min
   }
