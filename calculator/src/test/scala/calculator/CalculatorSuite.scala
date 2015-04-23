@@ -7,48 +7,97 @@ import org.scalatest.junit.JUnitRunner
 
 import org.scalatest._
 
-import TweetLength.MaxTweetLength
-
 @RunWith(classOf[JUnitRunner])
 class CalculatorSuite extends FunSuite with ShouldMatchers {
 
-  /******************
-   ** TWEET LENGTH **
-   ******************/
-
-  def tweetLength(text: String): Int =
-    text.codePointCount(0, text.length)
-
-  test("tweetRemainingCharsCount with a constant signal") {
-    val result = TweetLength.tweetRemainingCharsCount(Var("hello world"))
-    assert(result() == MaxTweetLength - tweetLength("hello world"))
-
-    val tooLong = "foo" * 200
-    val result2 = TweetLength.tweetRemainingCharsCount(Var(tooLong))
-    assert(result2() == MaxTweetLength - tweetLength(tooLong))
+  test("referencing a variable that is not in the map is an error") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map("a" -> Signal(Ref("b")))
+    val actual: Map[String, Signal[Double]] = Calculator.computeValues(namedExpressions)
+    assert(actual("a").apply().isNaN)
   }
 
-  test("tweetRemainingCharsCount with a supplementary char") {
-    val result = TweetLength.tweetRemainingCharsCount(Var("foo blabla \uD83D\uDCA9 bar"))
-    assert(result() == MaxTweetLength - tweetLength("foo blabla \uD83D\uDCA9 bar"))
+  test("cyclic dependency is an error") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Ref("b")),
+      "b" -> Signal(Ref("a"))
+    )
+    val actual: Map[String, Signal[Double]] = Calculator.computeValues(namedExpressions)
+    assert(actual("a").apply().isNaN)
+    assert(actual("b").apply().isNaN)
   }
 
-
-  test("colorForRemainingCharsCount with a constant signal") {
-    val resultGreen1 = TweetLength.colorForRemainingCharsCount(Var(52))
-    assert(resultGreen1() == "green")
-    val resultGreen2 = TweetLength.colorForRemainingCharsCount(Var(15))
-    assert(resultGreen2() == "green")
-
-    val resultOrange1 = TweetLength.colorForRemainingCharsCount(Var(12))
-    assert(resultOrange1() == "orange")
-    val resultOrange2 = TweetLength.colorForRemainingCharsCount(Var(0))
-    assert(resultOrange2() == "orange")
-
-    val resultRed1 = TweetLength.colorForRemainingCharsCount(Var(-1))
-    assert(resultRed1() == "red")
-    val resultRed2 = TweetLength.colorForRemainingCharsCount(Var(-5))
-    assert(resultRed2() == "red")
+  test("literal") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Literal(1))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(1d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
   }
 
+  test("plus") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Plus(Literal(1), Literal(1)))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(2d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
+  }
+
+  test("minus") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Minus(Literal(1), Literal(1)))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(0d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
+  }
+
+  test("times") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Times(Literal(2), Literal(2)))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(4d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
+  }
+
+  test("divide") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Divide(Literal(4), Literal(2)))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(2d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
+  }
+
+  test("ref") {
+    val namedExpressions: Map[String, Signal[Expr]] = Map(
+      "a" -> Signal(Ref("b")),
+      "b" -> Signal(Literal(1))
+    )
+    val expected: Map[String, Signal[Double]] = Map(
+      "a" -> Signal(1d),
+      "b" -> Signal(1d)
+    )
+    assertSameAfterEvaluation(namedExpressions, expected)
+  }
+
+  private def assertSameAfterEvaluation(namedExpressions: Map[String, Signal[Expr]], expected: Map[String, Signal[Double]]): Unit = {
+    val actual: Map[String, Signal[Double]] = Calculator.computeValues(namedExpressions)
+    assertSame(actual, expected)
+
+    def assertSame[T](actual: Map[String, Signal[T]], expected: Map[String, Signal[T]]): Unit = {
+      assert(actual.mapValues(sample) == expected.mapValues(sample))
+
+      def sample[T](signal: Signal[T]): T = {
+        signal.apply()
+      }
+    }
+  }
 }
