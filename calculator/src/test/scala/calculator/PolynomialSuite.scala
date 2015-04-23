@@ -29,4 +29,28 @@ class PolynomialSuite extends FunSuite with ShouldMatchers {
     assert(solutions == Set(4, -4))
   }
 
+  test("single solution is a singleton set") {
+    val a = Signal(1d)
+    val b = Signal(-8d)
+    val c = Signal(16d)
+
+    val delta: Signal[Double] = Polynomial.computeDelta(a, b, c)
+
+    val solutions: Set[Double] = Polynomial.computeSolutions(a, b, c, delta)()
+
+    assert(solutions == Set(4))
+  }
+
+  test("no solutions is the empty set") {
+    val a = Signal(1d)
+    val b = Signal(0d)
+    val c = Signal(16d)
+
+    val delta: Signal[Double] = Polynomial.computeDelta(a, b, c)
+
+    val solutions: Set[Double] = Polynomial.computeSolutions(a, b, c, delta)()
+
+    assert(solutions == Set())
+  }
+
 }

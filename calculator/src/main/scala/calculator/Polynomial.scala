@@ -2,6 +2,7 @@ package calculator
 
 import scala.math.pow
 import scala.math.sqrt
+import java.lang.Double.isNaN
 
 object Polynomial {
 
@@ -13,10 +14,10 @@ object Polynomial {
                        b: Signal[Double],
                        c: Signal[Double],
                        delta: Signal[Double]): Signal[Set[Double]] = {
-    println((b()*(-1) + sqrt(delta())) / (2 * a()))
-    Signal(Set(
-      (b()*(-1) + sqrt(delta())) / (2 * a()),
-      (b()*(-1) - sqrt(delta())) / (2 * a())
-    ))
+    val solutions: Set[Double] = Set(
+      (b() * (-1) + sqrt(delta())) / (2 * a()),
+      (b() * (-1) - sqrt(delta())) / (2 * a())
+    ).filterNot(isNaN)
+    Signal(solutions)
   }
 }
