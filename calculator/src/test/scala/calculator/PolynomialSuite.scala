@@ -46,7 +46,7 @@ class PolynomialSuite extends FunSuite with ShouldMatchers {
     assert(solutions == Set())
   }
 
-  test("signal updates are propogated") {
+  test("signal updates are propagated") {
     val a = Var(1d)
     val b = Var(0d)
     val c = Var(16d)
