@@ -15,30 +15,14 @@ import org.scalatest.junit.JUnitRunner
 @RunWith(classOf[JUnitRunner])
 class NodeScalaSuite extends FunSuite {
 
-  test("A Future should always be completed") {
-    val always = Future.always(517)
-
-    assert(Await.result(always, 0 nanos) == 517)
-  }
-  test("A Future should never be completed") {
-    val never = Future.never[Int]
-
-    try {
-      Await.result(never, 1 second)
-      assert(false)
-    } catch {
-      case t: TimeoutException => // ok!
-    }
-  }
-
-  
-  
   class DummyExchange(val request: Request) extends Exchange {
     @volatile var response = ""
     val loaded = Promise[String]()
+
     def write(s: String) {
       response += s
     }
+
     def close() {
       loaded.success(response)
     }
@@ -91,6 +75,7 @@ class NodeScalaSuite extends FunSuite {
       l.emit(req)
     }
   }
+
   test("Server should serve requests") {
     val dummy = new DummyServer(8191)
     val dummySubscription = dummy.start("/testDir") {
