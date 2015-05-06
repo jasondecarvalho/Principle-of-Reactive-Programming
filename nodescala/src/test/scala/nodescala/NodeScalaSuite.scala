@@ -31,7 +31,7 @@ class NodeScalaSuite extends FunSuite {
   class DummyListener(val port: Int, val relativePath: String) extends NodeScala.Listener {
     self =>
 
-    @volatile private var started = false
+    @volatile var started = false
     var handler: Exchange => Unit = null
 
     def createContext(h: Exchange => Unit) = this.synchronized {
@@ -95,6 +95,20 @@ class NodeScalaSuite extends FunSuite {
     test(immutable.Map("StrangeRequest" -> List("Does it work?")))
     test(immutable.Map("StrangeRequest" -> List("It works!")))
     test(immutable.Map("WorksForThree" -> List("Always works. Trust me.")))
+
+    dummySubscription.unsubscribe()
+  }
+
+  /*
+  Does not really check that both listener and respond loop are stopped,
+  but I do not want to change the interfaces so that I can check
+  whether they are stopped or not
+   */
+  test("Server start should return a Subscription that unsubscribes both listener and respond loop") {
+    val dummy = new DummyServer(8191)
+    val dummySubscription = dummy.start("/testDir") {
+      request => for (kv <- request.iterator) yield (kv + "\n").toString
+    }
 
     dummySubscription.unsubscribe()
   }
