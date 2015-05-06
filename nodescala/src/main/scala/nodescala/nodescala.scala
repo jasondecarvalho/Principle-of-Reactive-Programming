@@ -58,9 +58,11 @@ trait NodeScala {
       cancellationToken =>
         Future {
           while (cancellationToken.nonCancelled) {
-            listener.nextRequest().onSuccess {
-              case (request, exchange) =>
-                respond(exchange, cancellationToken, handler(request))
+            try {
+              val (request, exchange) = Await.result(listener.nextRequest(), 1 second)
+              respond(exchange, cancellationToken, handler(request))
+            } catch {
+              case t: TimeoutException =>
             }
           }
         }
