@@ -50,6 +50,35 @@ class WikipediaApiTest extends FunSuite {
     )
     assert(completed && count == 3, "completed: " + completed + ", event count: " + count)
   }
+
+  test("recovered method converts Observable[T] into an Observable[Try[T]] when success") {
+    val observable: Observable[String] = Observable.just("a")
+
+    var actual: Try[String] = Failure(new Exception())
+
+    observable.recovered.subscribe(
+      value => {
+        actual = value
+      }
+    )
+
+    assert(actual.get == "a")
+  }
+
+//  test("recovered method converts Observable[T] into an Observable[Try[T]] when failure") {
+//    val observable: Observable[String] = Observable.just(() => new Exception())
+//
+//    var actual: Try[String] = Success("a")
+//
+//    observable.recovered.subscribe(
+//      value => {
+//        actual = value
+//      }
+//    )
+//
+//    assert(actual.isFailure)
+//  }
+
   test("WikipediaApi should correctly use concatRecovered") {
     val requests = Observable.just(1, 2, 3)
     val remoteComputation = (n: Int) => Observable.just(0 to n : _*)
