@@ -4,18 +4,22 @@ import actorbintree.BinaryTreeNode._
 import akka.actor.{Stash, Actor, ActorRef, Props}
 
 object BinaryTreeNode {
+
   trait Position
 
   case object Left extends Position
+
   case object Right extends Position
 
   case class CopyTo(treeNode: ActorRef)
+
   case object CopyFinished
 
-  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode],  elem, initiallyRemoved)
+  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode], elem, initiallyRemoved)
 }
 
 class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
+
   import BinaryTreeSet._
 
   var subtrees = Map[Position, ActorRef]()
@@ -36,6 +40,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
       }
 
       if (newElem == elem) {
+        removed = false
         tellInsertResponse
       } else if (newElem < elem) {
         if (subtrees contains Left) {

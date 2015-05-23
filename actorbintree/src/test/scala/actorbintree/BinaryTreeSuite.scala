@@ -59,6 +59,20 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     expectMsg(ContainsResult(3, true))
   }
 
+  test("proper remove and reinsert") {
+    val topNode = system.actorOf(Props[BinaryTreeSet])
+
+    topNode ! Insert(testActor, id = 1, 1)
+    topNode ! Remove(testActor, id = 2, 1)
+    topNode ! Insert(testActor, id = 3, 1)
+    topNode ! Contains(testActor, id = 4, 1)
+
+    expectMsg(OperationFinished(1))
+    expectMsg(OperationFinished(2))
+    expectMsg(OperationFinished(3))
+    expectMsg(ContainsResult(4, true))
+  }
+
   test("instruction example") {
     val requester = TestProbe()
     val requesterRef = requester.ref
