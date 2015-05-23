@@ -50,7 +50,7 @@ object BinaryTreeSet {
 }
 
 
-class BinaryTreeSet extends Actor {
+class BinaryTreeSet extends Actor with Stash {
   import BinaryTreeSet._
   import BinaryTreeNode._
 
@@ -59,14 +59,26 @@ class BinaryTreeSet extends Actor {
   var root = createRoot
 
   // optional
-  var pendingQueue = Queue.empty[Operation]
-
-  // optional
   def receive = normal
 
-  // optional
   /** Accepts `Operation` and `GC` messages. */
-  val normal: Receive = { case _ => ??? }
+  val normal: Receive = {
+
+    case operation: Operation =>
+      root ! operation
+      context.become(processing)
+
+    case GC =>
+  }
+
+  val processing: Receive = {
+    case operation: Operation =>
+      stash()
+
+    case operationReply: OperationReply =>
+      unstashAll()
+      context.become(normal)
+  }
 
   // optional
   /** Handles messages while garbage collection is performed.
@@ -77,37 +89,6 @@ class BinaryTreeSet extends Actor {
 
 }
 
-object BinaryTreeNode {
-  trait Position
-
-  case object Left extends Position
-  case object Right extends Position
-
-  case class CopyTo(treeNode: ActorRef)
-  case object CopyFinished
-
-  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode],  elem, initiallyRemoved)
-}
-
-class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
-  import BinaryTreeNode._
-  import BinaryTreeSet._
-
-  var subtrees = Map[Position, ActorRef]()
-  var removed = initiallyRemoved
-
-  // optional
-  def receive = normal
-
-  // optional
-  /** Handles `Operation` messages and `CopyTo` requests. */
-  val normal: Receive = { case _ => ??? }
-
-  // optional
-  /** `expected` is the set of ActorRefs whose replies we are waiting for,
-    * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
-    */
-  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = ???
 
 
-}
+
