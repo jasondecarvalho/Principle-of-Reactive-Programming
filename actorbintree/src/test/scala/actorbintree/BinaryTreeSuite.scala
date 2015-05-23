@@ -97,7 +97,7 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     verify(requester, ops, expectedReplies)
   }
 
-  test("behave identically to built-in set (includes GC)") {
+  test("behave identically to built-in set (includes GC) NB: does not test removed nodes are not copied, or that unneeded actors are stopped") {
     val rnd = new Random()
     def randomOperations(requester: ActorRef, count: Int): Seq[Operation] = {
       def randomElement: Int = rnd.nextInt(100)

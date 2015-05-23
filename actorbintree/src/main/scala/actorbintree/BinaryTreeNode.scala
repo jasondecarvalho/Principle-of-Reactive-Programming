@@ -25,56 +25,41 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   var subtrees = Map[Position, ActorRef]()
   var removed = initiallyRemoved
 
-  // optional
   def receive = normal
 
-  // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
 
     case Insert(requester, id, newElem) => {
-      val response: OperationFinished = OperationFinished(id)
-      def tellInsertResponse = {
-        context.parent ! response
-        requester ! response
-      }
-
       if (newElem == elem) {
         removed = false
-        tellInsertResponse
+        requester ! OperationFinished(id)
       } else if (newElem < elem) {
         if (subtrees contains Left) {
           subtrees(Left) ! Insert(requester, id, newElem)
         } else {
           subtrees += Left -> context.actorOf(BinaryTreeNode.props(newElem, false))
-          tellInsertResponse
+          requester ! OperationFinished(id)
         }
       } else if (elem < newElem) {
         if (subtrees contains Right) {
           subtrees(Right) ! Insert(requester, id, newElem)
         } else {
           subtrees += Right -> context.actorOf(BinaryTreeNode.props(newElem, false))
-          tellInsertResponse
+          requester ! OperationFinished(id)
         }
       }
     }
 
     case Contains(requester, id, value) => {
-
-      def tellContainsResponse(result: Boolean) = {
-        val response = ContainsResult(id, result)
-        requester ! response
-        context.parent ! response
-      }
-
       if (value == elem && !removed) {
-        tellContainsResponse(true)
+        requester ! ContainsResult(id, true)
       } else if (value < elem && subtrees.contains(Left)) {
         subtrees(Left) ! Contains(requester, id, value)
       } else if (value > elem && subtrees.contains(Right)) {
         subtrees(Right) ! Contains(requester, id, value)
       } else {
-        tellContainsResponse(false)
+        requester ! ContainsResult(id, false)
       }
     }
 
@@ -88,20 +73,49 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
           removed = true
         }
         val response: OperationFinished = OperationFinished(id)
-        context.parent ! response
         requester ! response
       }
     }
 
-    case operationReply: OperationReply =>
-      context.parent ! operationReply
+    case CopyTo(treeNode) => {
+      if (removed && subtrees.isEmpty) {
+        context.parent ! CopyFinished
+      } else {
+        val subnodes: Set[ActorRef] = subtrees.values.toSet
+        subnodes foreach {
+          _ ! CopyTo(treeNode)
+        }
+        if (!removed) {
+          treeNode ! Insert(self, 0, elem)
+        }
+        context.become(copying(subnodes, removed))
+      }
+    }
+
   }
 
-  // optional
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
     * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
     */
-  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = ???
+  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
+    case operationFinished: OperationFinished => {
+      if (expected.isEmpty) {
+        context.parent ! CopyFinished
+        context.unbecome
+      } else {
+        context.become(copying(expected, insertConfirmed = true))
+      }
+    }
 
+    case CopyFinished => {
+      val remaining = expected - sender
+      if (remaining.isEmpty && insertConfirmed) {
+        context.parent ! CopyFinished
+        context.unbecome
+      } else {
+        context.become(copying(remaining, insertConfirmed))
+      }
+    }
+  }
 
 }
