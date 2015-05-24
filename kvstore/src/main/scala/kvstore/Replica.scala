@@ -1,10 +1,10 @@
 package kvstore
 
-import akka.actor.{Actor, ActorRef, Cancellable, Props}
+import akka.actor._
 import kvstore.Arbiter._
 import kvstore.Persistence.{Persist, Persisted}
 
-import scala.concurrent.duration.{Duration, _}
+import scala.concurrent.duration._
 
 object Replica {
   sealed trait Operation {
@@ -19,6 +19,11 @@ object Replica {
   case class OperationAck(id: Long) extends OperationReply
   case class OperationFailed(id: Long) extends OperationReply
   case class GetResult(key: String, valueOption: Option[String], id: Long) extends OperationReply
+
+  class PersistAck(val requester: ActorRef, val retry: Cancellable)
+
+  class TimeoutPersistAck(requester: ActorRef, retry: Cancellable, val timeout: Cancellable)
+    extends PersistAck(requester: ActorRef, retry: Cancellable)
 
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
@@ -35,7 +40,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
-  var persistAcks = Map.empty[Long, (ActorRef, Cancellable)]
+  var snapshotAcks = Map.empty[Long, ActorRef]
+  var persistAcks = Map.empty[Long, Cancellable]
+  var replicateAcks = Map.empty[Long, Set[Cancellable]]
+  var timeouts = Map.empty[Long, (Long, ActorRef, Cancellable)]
 
   var nextSeq = 0
 
@@ -47,18 +55,87 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   }
 
   val leader: Receive = {
-    case Insert(key, value, id) => {
-      kv += key -> value
-      sender ! OperationAck(id)
-    }
+    case Replicas(replicas) => {
+      val added = replicas -- secondaries.keySet - self
+      val removed = secondaries.keySet -- replicas
 
-    case Remove(key, id) => {
-      kv -= key
-      sender ! OperationAck(id)
+      added foreach {
+        replica => {
+          val replicator: ActorRef = context.actorOf(Replicator.props(replica))
+          secondaries += replica -> replicator
+          replicators += replicator
+        }
+      }
+
+      removed foreach {
+        replica => {
+          secondaries -= replica
+          replicators -= replica
+        }
+      }
     }
 
     case Get(key, id) => {
       sender ! GetResult(key, kv.get(key), id)
+    }
+
+    case Insert(key, value, id) => {
+      scheduleTimeout(id, 1 + secondaries.size)
+      kv += key -> value
+      persist(key, Some(value), id)
+      replicate(key, Some(value), id)
+    }
+
+    case Remove(key, id) => {
+      scheduleTimeout(id, 1 + secondaries.size)
+      kv -= key
+      persist(key, None, id)
+      replicate(key, None, id)
+    }
+
+    case Persisted(_, id) => {
+      persistAcks(id).cancel()
+      persistAcks -= id
+      registerCompletedOperation(id)
+    }
+
+    case Replicated(_, id) => {
+      registerCompletedOperation(id)
+    }
+  }
+
+  private def persist(key: String, valueOption: Option[String], id: Long) = {
+    val persist: Persist = Persist(key, valueOption, id)
+    val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, persistence, persist)
+    persistAcks += id -> cancellable
+  }
+
+  private def replicate(key: String, valueOption: Option[String], id: Long) = {
+    val replicate: Replicate = Replicate(key, valueOption, id)
+    val cancellables: Set[Cancellable] = replicators.map {
+      replicator => context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replicator, replicate)
+    }
+    replicateAcks += id -> cancellables
+  }
+
+  private def scheduleTimeout(id: Long, waitingOperations: Long) = {
+    val operationFailed: OperationFailed = OperationFailed(id)
+    val cancellable: Cancellable = context.system.scheduler.schedule(1 second, 1 day, sender, operationFailed)
+    timeouts += id ->(waitingOperations, sender, cancellable)
+  }
+
+  private def registerCompletedOperation(id: Long) = {
+    val (count, requester, timeout) = timeouts(id)
+    if (count == 1) {
+      timeout.cancel()
+      timeouts -= id
+      replicateAcks(id) foreach {
+        _.cancel()
+      }
+      replicateAcks -= id
+      requester ! OperationAck(id)
+    } else {
+      timeouts += id ->(count - 1, requester, timeout)
     }
   }
 
@@ -75,16 +152,16 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           case Some(value) => kv += key -> value
           case None => kv -= key
         }
-        val persist: Persist = Persist(key, valueOption, seq)
-        val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, persistence, persist)
-        persistAcks += seq -> (sender, cancellable)
+        snapshotAcks += seq -> sender
+        persist(key, valueOption, seq)
       }
     }
 
     case Persisted(key, id) => {
-      val (actorRef, cancellable) = persistAcks(id)
-      actorRef ! SnapshotAck(key, id)
-      cancellable.cancel()
+      persistAcks(id).cancel()
+      persistAcks -= id
+      snapshotAcks(id) ! SnapshotAck(key, id)
+      snapshotAcks -= id
       nextSeq += 1
     }
   }
