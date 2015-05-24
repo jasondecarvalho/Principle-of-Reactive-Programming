@@ -1,7 +1,10 @@
 package kvstore
 
-import akka.actor.{Actor, ActorRef, Props}
+import akka.actor.{Actor, ActorRef, Cancellable, Props}
 import kvstore.Arbiter._
+import kvstore.Persistence.{Persist, Persisted}
+
+import scala.concurrent.duration.{Duration, _}
 
 object Replica {
   sealed trait Operation {
@@ -23,12 +26,16 @@ object Replica {
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import Replica._
   import Replicator._
+  import context.dispatcher
 
   var kv = Map.empty[String, String]
+  var persistence = context.actorOf(persistenceProps)
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
+
+  var persistAcks = Map.empty[Long, (ActorRef, Cancellable)]
 
   var nextSeq = 0
 
@@ -60,35 +67,25 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       sender ! GetResult(key, kv.get(key), id)
     }
 
-    case Replicate(key, valueOption, id) => {
-      valueOption match {
-        case Some(value) => {
-          kv += key -> value
-          sender ! Replicated(key, id)
-        }
-        case None => {
-          kv -= key
-          sender ! Replicated(key, id)
-        }
-      }
-    }
-
     case Snapshot(key, valueOption, seq) => {
       if(seq < nextSeq) {
         sender ! SnapshotAck(key, seq)
       } else if(seq == nextSeq) {
         valueOption match {
-          case Some(value) => {
-            kv += key -> value
-            sender ! SnapshotAck(key, seq)
-          }
-          case None => {
-            kv -= key
-            sender ! SnapshotAck(key, seq)
-          }
+          case Some(value) => kv += key -> value
+          case None => kv -= key
         }
-        nextSeq += 1
+        val persist: Persist = Persist(key, valueOption, seq)
+        val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, persistence, persist)
+        persistAcks += seq -> (sender, cancellable)
       }
+    }
+
+    case Persisted(key, id) => {
+      val (actorRef, cancellable) = persistAcks(id)
+      actorRef ! SnapshotAck(key, id)
+      cancellable.cancel()
+      nextSeq += 1
     }
   }
 
