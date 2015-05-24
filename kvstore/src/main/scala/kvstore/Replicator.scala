@@ -1,8 +1,6 @@
 package kvstore
 
-import akka.actor.Props
-import akka.actor.Actor
-import akka.actor.ActorRef
+import akka.actor.{Cancellable, Props, Actor, ActorRef}
 import scala.concurrent.duration._
 
 object Replicator {
@@ -19,13 +17,10 @@ class Replicator(val replica: ActorRef) extends Actor {
   import Replicator._
   import Replica._
   import context.dispatcher
-  
-  /*
-   * The contents of this actor is just a suggestion, you can implement it in any way you like.
-   */
 
-  // map from sequence number to pair of sender and request
-  var acks = Map.empty[Long, (ActorRef, Replicate)]
+  // map from sequence number -> (sender, request, cancellable)
+  var snapshotAcks = Map.empty[Long, (ActorRef, Replicate, Cancellable)]
+
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
   
@@ -36,10 +31,20 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
-  
-  /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case _ =>
+    case replicate@Replicate(key, valueOption, id) => {
+      val seq = nextSeq
+      val snapshot = Snapshot(key, valueOption, seq)
+      val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replica, snapshot)
+      snapshotAcks += seq -> (sender, replicate, cancellable)
+    }
+
+    case SnapshotAck(key, seq) => {
+      val (actorRef, replicate, cancellable) = snapshotAcks(seq)
+      actorRef ! Replicated(key, replicate.id)
+      snapshotAcks -= seq
+      cancellable.cancel()
+    }
   }
 
 }
