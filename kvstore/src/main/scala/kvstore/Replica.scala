@@ -5,6 +5,7 @@ import kvstore.Arbiter._
 import kvstore.Persistence.{Persist, Persisted}
 
 import scala.concurrent.duration._
+import scala.util.Random
 
 object Replica {
   sealed trait Operation {
@@ -19,11 +20,6 @@ object Replica {
   case class OperationAck(id: Long) extends OperationReply
   case class OperationFailed(id: Long) extends OperationReply
   case class GetResult(key: String, valueOption: Option[String], id: Long) extends OperationReply
-
-  class PersistAck(val requester: ActorRef, val retry: Cancellable)
-
-  class TimeoutPersistAck(requester: ActorRef, retry: Cancellable, val timeout: Cancellable)
-    extends PersistAck(requester: ActorRef, retry: Cancellable)
 
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
@@ -40,10 +36,11 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
-  var snapshotAcks = Map.empty[Long, ActorRef]
+  var snapshotRequesters = Map.empty[Long, ActorRef]
+
   var persistAcks = Map.empty[Long, Cancellable]
-  var replicateAcks = Map.empty[Long, Set[Cancellable]]
-  var timeouts = Map.empty[Long, (Long, ActorRef, Cancellable)]
+  var replicateAcks = Map.empty[Long, Set[(ActorRef, Cancellable)]] // Changing this data structure might make the code below better
+  var pendingOps = Map.empty[Long, (ActorRef, Cancellable)]
 
   var nextSeq = 0
 
@@ -59,6 +56,37 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       val added = replicas -- secondaries.keySet - self
       val removed = secondaries.keySet -- replicas
 
+      removed foreach {
+        replica => {
+          var newReplicateAcks = Map.empty[Long, Set[(ActorRef, Cancellable)]]
+          var idsToCheck = Set.empty[Long]
+          replicateAcks foreach {
+            case (id, remainingAcks) => {
+              remainingAcks foreach {
+                case (actorRef, cancellable) if actorRef == secondaries(replica) => {
+                  cancellable.cancel()
+                }
+              }
+              val withoutRemovedReplicas = remainingAcks filterNot {
+                case (actorRef, _) => actorRef == secondaries(replica)
+              }
+              if(!withoutRemovedReplicas.isEmpty) {
+                newReplicateAcks += id -> withoutRemovedReplicas
+              } else {
+                idsToCheck += id
+              }
+            }
+          }
+          replicateAcks = newReplicateAcks
+
+          idsToCheck foreach { checkForCompletedOperation(_) }
+
+          secondaries(replica) ! PoisonPill
+          secondaries -= replica
+          replicators -= replica
+        }
+      }
+
       added foreach {
         replica => {
           val replicator: ActorRef = context.actorOf(Replicator.props(replica))
@@ -67,11 +95,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         }
       }
 
-      removed foreach {
-        replica => {
-          secondaries -= replica
-          replicators -= replica
-        }
+      kv foreach {
+        case (key, value) => replicate(key, Some(value), Random.nextLong)
       }
     }
 
@@ -80,14 +105,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
 
     case Insert(key, value, id) => {
-      scheduleTimeout(id, 1 + secondaries.size)
+      scheduleTimeout(id)
       kv += key -> value
       persist(key, Some(value), id)
       replicate(key, Some(value), id)
     }
 
     case Remove(key, id) => {
-      scheduleTimeout(id, 1 + secondaries.size)
+      scheduleTimeout(id)
       kv -= key
       persist(key, None, id)
       replicate(key, None, id)
@@ -96,11 +121,19 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Persisted(_, id) => {
       persistAcks(id).cancel()
       persistAcks -= id
-      registerCompletedOperation(id)
+      checkForCompletedOperation(id)
     }
 
     case Replicated(_, id) => {
-      registerCompletedOperation(id)
+      val remaining = replicateAcks(id) filterNot {
+        case (actorRef, _) => actorRef == sender
+      }
+      if(remaining.isEmpty) {
+        replicateAcks -= id
+      } else {
+        replicateAcks += id -> remaining
+      }
+      checkForCompletedOperation(id)
     }
   }
 
@@ -111,31 +144,32 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   }
 
   private def replicate(key: String, valueOption: Option[String], id: Long) = {
-    val replicate: Replicate = Replicate(key, valueOption, id)
-    val cancellables: Set[Cancellable] = replicators.map {
-      replicator => context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replicator, replicate)
+    if(!replicators.isEmpty) {
+      val replicate: Replicate = Replicate(key, valueOption, id)
+      var replicateAcksSet: Set[(ActorRef, Cancellable)] = Set.empty[(ActorRef, Cancellable)]
+      replicators foreach {
+        replicator =>
+          val cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replicator, replicate)
+          replicateAcksSet += ((replicator, cancellable))
+      }
+      replicateAcks += id -> replicateAcksSet
     }
-    replicateAcks += id -> cancellables
   }
 
-  private def scheduleTimeout(id: Long, waitingOperations: Long) = {
+  private def scheduleTimeout(id: Long) = {
     val operationFailed: OperationFailed = OperationFailed(id)
     val cancellable: Cancellable = context.system.scheduler.schedule(1 second, 1 day, sender, operationFailed)
-    timeouts += id ->(waitingOperations, sender, cancellable)
+    pendingOps += id ->(sender, cancellable)
   }
 
-  private def registerCompletedOperation(id: Long) = {
-    val (count, requester, timeout) = timeouts(id)
-    if (count == 1) {
-      timeout.cancel()
-      timeouts -= id
-      replicateAcks(id) foreach {
-        _.cancel()
+  private def checkForCompletedOperation(id: Long) = {
+    if(pendingOps contains id) {
+      val (requester, timeout) = pendingOps(id)
+      if (!persistAcks.contains(id) && !replicateAcks.contains(id)) {
+        timeout.cancel()
+        pendingOps -= id
+        requester ! OperationAck(id)
       }
-      replicateAcks -= id
-      requester ! OperationAck(id)
-    } else {
-      timeouts += id ->(count - 1, requester, timeout)
     }
   }
 
@@ -152,7 +186,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           case Some(value) => kv += key -> value
           case None => kv -= key
         }
-        snapshotAcks += seq -> sender
+        snapshotRequesters += seq -> sender
         persist(key, valueOption, seq)
       }
     }
@@ -160,8 +194,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Persisted(key, id) => {
       persistAcks(id).cancel()
       persistAcks -= id
-      snapshotAcks(id) ! SnapshotAck(key, id)
-      snapshotAcks -= id
+      snapshotRequesters(id) ! SnapshotAck(key, id)
+      snapshotRequesters -= id
       nextSeq += 1
     }
   }
