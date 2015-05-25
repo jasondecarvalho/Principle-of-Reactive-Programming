@@ -21,7 +21,7 @@ class Persistence(flaky: Boolean) extends Actor {
       if (!flaky || Random.nextBoolean()) {
         sender ! Persisted(key, id)
       } else {
-        throw new PersistenceException
+//        throw new PersistenceException
       }
   }
 

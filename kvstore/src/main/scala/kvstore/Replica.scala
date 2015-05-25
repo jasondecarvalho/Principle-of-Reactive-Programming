@@ -39,7 +39,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var snapshotRequesters = Map.empty[Long, ActorRef]
 
   var persistAcks = Map.empty[Long, Cancellable]
-  var replicateAcks = Map.empty[Long, Set[(ActorRef, Cancellable)]] // Changing this data structure might make the code below better
+  var replicateAcks = Map.empty[Long, Set[(ActorRef, Cancellable)]]
   var pendingOps = Map.empty[Long, (ActorRef, Cancellable)]
 
   var nextSeq = 0
@@ -125,13 +125,21 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
 
     case Replicated(_, id) => {
-      val remaining = replicateAcks(id) filterNot {
-        case (actorRef, _) => actorRef == sender
-      }
-      if(remaining.isEmpty) {
-        replicateAcks -= id
-      } else {
-        replicateAcks += id -> remaining
+      if (replicateAcks contains id) {
+        replicateAcks(id) foreach {
+          case (actorRef, cancellable) =>
+            if (actorRef == sender) {
+              cancellable.cancel()
+            }
+        }
+        val remaining = replicateAcks(id) filterNot {
+          case (actorRef, _) => actorRef == sender
+        }
+        if (remaining.isEmpty) {
+          replicateAcks -= id
+        } else {
+          replicateAcks += id -> remaining
+        }
       }
       checkForCompletedOperation(id)
     }
@@ -139,7 +147,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   private def persist(key: String, valueOption: Option[String], id: Long) = {
     val persist: Persist = Persist(key, valueOption, id)
-    val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, persistence, persist)
+    val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 100.milliseconds, persistence, persist)
     persistAcks += id -> cancellable
   }
 
@@ -149,7 +157,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       var replicateAcksSet: Set[(ActorRef, Cancellable)] = Set.empty[(ActorRef, Cancellable)]
       replicators foreach {
         replicator =>
-          val cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replicator, replicate)
+          val cancellable = context.system.scheduler.schedule(Duration.Zero, 100.milliseconds, replicator, replicate)
           replicateAcksSet += ((replicator, cancellable))
       }
       replicateAcks += id -> replicateAcksSet
@@ -158,7 +166,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   private def scheduleTimeout(id: Long) = {
     val operationFailed: OperationFailed = OperationFailed(id)
-    val cancellable: Cancellable = context.system.scheduler.schedule(1 second, 1 day, sender, operationFailed)
+    val cancellable: Cancellable = context.system.scheduler.scheduleOnce(1.second, sender, operationFailed)
     pendingOps += id ->(sender, cancellable)
   }
 
@@ -186,17 +194,21 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           case Some(value) => kv += key -> value
           case None => kv -= key
         }
+        nextSeq += 1
         snapshotRequesters += seq -> sender
         persist(key, valueOption, seq)
       }
     }
 
     case Persisted(key, id) => {
-      persistAcks(id).cancel()
-      persistAcks -= id
-      snapshotRequesters(id) ! SnapshotAck(key, id)
-      snapshotRequesters -= id
-      nextSeq += 1
+      if (persistAcks contains id) {
+        persistAcks(id).cancel()
+        persistAcks -= id
+      }
+      if (snapshotRequesters contains id) {
+        snapshotRequesters(id) ! SnapshotAck(key, id)
+        snapshotRequesters -= id
+      }
     }
   }
 

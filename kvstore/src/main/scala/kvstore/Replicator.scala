@@ -35,15 +35,17 @@ class Replicator(val replica: ActorRef) extends Actor {
     case replicate@Replicate(key, valueOption, _) => {
       val seq = nextSeq
       val snapshot = Snapshot(key, valueOption, seq)
-      val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 50 milliseconds, replica, snapshot)
+      val cancellable: Cancellable = context.system.scheduler.schedule(Duration.Zero, 100.milliseconds, replica, snapshot)
       snapshotAcks += seq -> (sender, replicate, cancellable)
     }
 
     case SnapshotAck(key, seq) => {
-      val (actorRef, replicate, cancellable) = snapshotAcks(seq)
-      actorRef ! Replicated(key, replicate.id)
-      snapshotAcks -= seq
-      cancellable.cancel()
+      if(snapshotAcks contains seq) {
+        val (actorRef, replicate, cancellable) = snapshotAcks(seq)
+        cancellable.cancel()
+        actorRef ! Replicated(key, replicate.id)
+        snapshotAcks -= seq
+      }
     }
   }
 

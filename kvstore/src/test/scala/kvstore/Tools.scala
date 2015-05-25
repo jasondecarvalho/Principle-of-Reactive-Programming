@@ -1,6 +1,8 @@
 package kvstore
 
 import akka.actor.ActorSystem
+import kvstore.Persistence.{Persisted, Persist}
+import kvstore.Replicator.{SnapshotAck, Replicate}
 import scala.concurrent.duration.FiniteDuration
 import akka.testkit.TestProbe
 import akka.actor.{ ActorRef, Actor }
@@ -10,10 +12,28 @@ import akka.actor.Props
 import akka.testkit.TestKit
 import akka.testkit.ImplicitSender
 import scala.concurrent.duration._
+import scala.util.Random
 
 object Tools {
   class TestRefWrappingActor(val probe: TestProbe) extends Actor {
     def receive = { case msg => probe.ref forward msg }
+  }
+
+  def FlakySecondaryProps(secondary: ActorRef, flaky: Boolean): Props = Props(classOf[FlakySecondary], secondary, flaky)
+
+  class FlakySecondary(secondary: ActorRef, flaky: Boolean) extends Actor {
+    def receive = {
+      case replicate: Replicate =>
+        if (!flaky || Random.nextBoolean()) {
+          secondary.tell(replicate, sender)
+        }
+      case snapshotAck: SnapshotAck =>
+        if (!flaky || Random.nextBoolean()) {
+          secondary.tell(snapshotAck, sender)
+        }
+      case message =>
+        secondary.tell(message, sender)
+    }
   }
 }
 
